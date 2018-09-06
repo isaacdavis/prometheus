@@ -75,7 +75,8 @@ common-test-short:
 .PHONY: common-test
 common-test:
 	@echo ">> running all tests"
-	$(GO) test -race $(pkgs)
+#	$(GO) test -race $(pkgs)
+	$(GO) test $(pkgs)
 
 .PHONY: common-format
 common-format:
