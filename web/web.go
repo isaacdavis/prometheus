@@ -14,7 +14,6 @@
 package web
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -168,6 +167,7 @@ type Options struct {
 	ConsoleLibrariesPath string
 	EnableLifecycle      bool
 	EnableAdminAPI       bool
+	RemoteReadLimit      int
 }
 
 func instrumentHandler(handlerName string, handler http.HandlerFunc) http.HandlerFunc {
@@ -228,6 +228,7 @@ func New(logger log.Logger, o *Options) *Handler {
 		h.options.EnableAdminAPI,
 		logger,
 		h.ruleManager,
+		h.options.RemoteReadLimit,
 	)
 
 	if o.RoutePrefix != "/" {
@@ -262,7 +263,11 @@ func New(logger log.Logger, o *Options) *Handler {
 
 	router.Get("/consoles/*filepath", readyf(h.consoles))
 
-	router.Get("/static/*filepath", h.serveStaticAsset)
+	router.Get("/static/*filepath", func(w http.ResponseWriter, r *http.Request) {
+		r.URL.Path = filepath.Join("/static", route.Param(r.Context(), "filepath"))
+		fs := http.FileServer(ui.Assets)
+		fs.ServeHTTP(w, r)
+	})
 
 	if o.UserAssetsPath != "" {
 		router.Get("/user/*filepath", route.FileServe(o.UserAssetsPath))
@@ -349,28 +354,6 @@ func serveDebug(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
-func (h *Handler) serveStaticAsset(w http.ResponseWriter, req *http.Request) {
-	fp := route.Param(req.Context(), "filepath")
-	fp = filepath.Join("web/ui/static", fp)
-
-	info, err := ui.AssetInfo(fp)
-	if err != nil {
-		level.Warn(h.logger).Log("msg", "Could not get file info", "err", err, "file", fp)
-		w.WriteHeader(http.StatusNotFound)
-		return
-	}
-	file, err := ui.Asset(fp)
-	if err != nil {
-		if err != io.EOF {
-			level.Warn(h.logger).Log("msg", "Could not get file", "err", err, "file", fp)
-		}
-		w.WriteHeader(http.StatusNotFound)
-		return
-	}
-
-	http.ServeContent(w, req, info.Name(), info.ModTime(), bytes.NewReader(file))
-}
-
 // Ready sets Handler to be ready.
 func (h *Handler) Ready() {
 	atomic.StoreUint32(&h.ready, 1)
@@ -431,16 +414,7 @@ func (h *Handler) Run(ctx context.Context) error {
 		grpcSrv = grpc.NewServer()
 	)
 	av2 := api_v2.New(
-		time.Now,
 		h.options.TSDB,
-		h.options.QueryEngine,
-		h.options.Storage.Querier,
-		func() []*scrape.Target {
-			return h.options.ScrapeManager.TargetsActive()
-		},
-		func() []*url.URL {
-			return h.options.Notifier.Alertmanagers()
-		},
 		h.options.EnableAdminAPI,
 	)
 	av2.RegisterGRPC(grpcSrv)
@@ -848,15 +822,32 @@ func tmplFuncs(consolesPath string, opts *Options) template_text.FuncMap {
 }
 
 func (h *Handler) getTemplate(name string) (string, error) {
-	baseTmpl, err := ui.Asset("web/ui/templates/_base.html")
+	var tmpl string
+
+	appendf := func(name string) error {
+		f, err := ui.Assets.Open(filepath.Join("/templates", name))
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		b, err := ioutil.ReadAll(f)
+		if err != nil {
+			return err
+		}
+		tmpl += string(b)
+		return nil
+	}
+
+	err := appendf("_base.html")
 	if err != nil {
 		return "", fmt.Errorf("error reading base template: %s", err)
 	}
-	pageTmpl, err := ui.Asset(filepath.Join("web/ui/templates", name))
+	err = appendf(name)
 	if err != nil {
 		return "", fmt.Errorf("error reading page template %s: %s", name, err)
 	}
-	return string(baseTmpl) + string(pageTmpl), nil
+
+	return tmpl, nil
 }
 
 func (h *Handler) executeTemplate(w http.ResponseWriter, name string, data interface{}) {

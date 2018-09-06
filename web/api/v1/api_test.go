@@ -313,7 +313,7 @@ func setupRemote(s storage.Storage) *httptest.Server {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
-			resp.Results[i], err = remote.ToQueryResult(set)
+			resp.Results[i], err = remote.ToQueryResult(set, 1e6)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
@@ -681,6 +681,7 @@ func testEndpoints(t *testing.T, api *API, testLabelAPI bool) {
 								Labels:      labels.Labels{},
 								Annotations: labels.Labels{},
 								Alerts:      []*Alert{},
+								Health:      "unknown",
 								Type:        "alerting",
 							},
 							alertingRule{
@@ -690,12 +691,14 @@ func testEndpoints(t *testing.T, api *API, testLabelAPI bool) {
 								Labels:      labels.Labels{},
 								Annotations: labels.Labels{},
 								Alerts:      []*Alert{},
+								Health:      "unknown",
 								Type:        "alerting",
 							},
 							recordingRule{
 								Name:   "recording-rule-1",
 								Query:  "vector(1)",
 								Labels: labels.Labels{},
+								Health: "unknown",
 								Type:   "recording",
 							},
 						},
@@ -830,6 +833,7 @@ func TestReadEndpoint(t *testing.T) {
 				},
 			}
 		},
+		remoteReadLimit: 1e6,
 	}
 
 	// Encode the request.
@@ -857,6 +861,10 @@ func TestReadEndpoint(t *testing.T) {
 	}
 	recorder := httptest.NewRecorder()
 	api.remoteRead(recorder, request)
+
+	if recorder.Code/100 != 2 {
+		t.Fatal(recorder.Code)
+	}
 
 	// Decode the response.
 	compressed, err = ioutil.ReadAll(recorder.Result().Body)
